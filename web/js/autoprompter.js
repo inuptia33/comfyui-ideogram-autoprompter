@@ -115,9 +115,9 @@ app.registerExtension({
       node._areaObservers = [];
       // AI state (serialized to ai_state, minus the API key) + transient image/key.
       node._ai = { backend: "local", idea: "", local_model: DEFAULT_LOCAL_MODEL,
-        gemini_model: "", unload_after: true, four_bit: false, density: "normal", attn: "auto",
+        gemini_model: "", venice_model: "", unload_after: true, four_bit: false, density: "normal", attn: "auto",
         ollama_host: DEFAULT_OLLAMA_HOST, ollama_model: "", think: false };
-      node._apiKey = "";       // session only — never serialized
+      node._apiKey = "";       // session only — never serialized (shared by Gemini and Venice)
       node._image = null;      // { b64, url } — session only
       node._gening = false;
 
@@ -139,7 +139,9 @@ app.registerExtension({
       const ollamaBtn = document.createElement("button"); ollamaBtn.className = "ideoap-btn"; ollamaBtn.textContent = "Ollama";
       ollamaBtn.title = "Ollama (llama.cpp / GGUF) — fastest on most GPUs. Needs `ollama serve` running.";
       const gemBtn = document.createElement("button"); gemBtn.className = "ideoap-btn"; gemBtn.textContent = "Gemini";
-      backendRow.appendChild(localBtn); backendRow.appendChild(ollamaBtn); backendRow.appendChild(gemBtn);
+      const venBtn = document.createElement("button"); venBtn.className = "ideoap-btn"; venBtn.textContent = "Venice";
+      venBtn.title = "Venice.ai — private, uncensored cloud inference with vision-capable models.";
+      backendRow.appendChild(localBtn); backendRow.appendChild(ollamaBtn); backendRow.appendChild(gemBtn); backendRow.appendChild(venBtn);
       // detail / object-density segmented control
       const densSpacer = document.createElement("span"); densSpacer.style.flex = "1"; backendRow.appendChild(densSpacer);
       const densLbl = document.createElement("span"); densLbl.className = "ideoap-lbl"; densLbl.textContent = "Detail";
@@ -209,6 +211,24 @@ app.registerExtension({
       ollamaHint.style.cssText = "color:#8a8a8a; font:11px ui-sans-serif,system-ui,sans-serif;";
       ollamaHint.innerHTML = 'Fastest engine. Start it with <span style="color:#fff;">ollama serve</span> and pull a vision model, e.g. <span style="color:#fff;">ollama pull qwen2.5vl</span>.';
       aiBar.appendChild(ollamaHint);
+
+      // venice row (api key + fetch + model select)
+      const venRow = document.createElement("div");
+      venRow.className = "ideoap-row";
+      const venKeyInput = document.createElement("input");
+      venKeyInput.className = "ideoap-input"; venKeyInput.type = "password";
+      venKeyInput.placeholder = "Venice API key"; venKeyInput.style.flex = "1"; venKeyInput.style.minWidth = "120px";
+      const venFetchBtn = document.createElement("button"); venFetchBtn.className = "ideoap-btn"; venFetchBtn.textContent = "Fetch models";
+      const venSelect = document.createElement("select"); venSelect.className = "ideoap-select";
+      const vph = document.createElement("option"); vph.value = ""; vph.textContent = "— models —"; venSelect.appendChild(vph);
+      venRow.appendChild(venKeyInput); venRow.appendChild(venFetchBtn); venRow.appendChild(venSelect);
+      aiBar.appendChild(venRow);
+
+      const venHint = document.createElement("div");
+      venHint.className = "ideoap-status";
+      venHint.style.cssText = "color:#8a8a8a; font:11px ui-sans-serif,system-ui,sans-serif;";
+      venHint.innerHTML = 'Private, uncensored cloud inference. Get an API key from <a href="https://venice.ai" target="_blank" rel="noopener" style="color:#fff; text-decoration:underline;">venice.ai</a>. Pick a vision-capable model for image input.';
+      aiBar.appendChild(venHint);
 
       // local-only row (model id + 4-bit)
       const localRow = document.createElement("div");
@@ -808,29 +828,37 @@ app.registerExtension({
         // Show the "get a free key" line only in Gemini mode while the key box is empty.
         keyHint.style.display = (node._ai.backend === "gemini" && !node._apiKey) ? "" : "none";
       }
+      function refreshVenHint() {
+        venHint.style.display = (node._ai.backend === "venice" && !venKeyInput.value) ? "" : "none";
+      }
       function refreshBackendUI() {
         const b = node._ai.backend;
-        const isGem = b === "gemini", isOllama = b === "ollama", isLocal = b === "local";
+        const isGem = b === "gemini", isOllama = b === "ollama", isLocal = b === "local", isVen = b === "venice";
         localBtn.classList.toggle("active", isLocal);
         ollamaBtn.classList.toggle("active", isOllama);
         gemBtn.classList.toggle("active", isGem);
+        venBtn.classList.toggle("active", isVen);
         gemRow.style.display = isGem ? "" : "none";
+        keyHint.style.display = isGem ? (node._apiKey ? "none" : "") : "none";
         ollamaRow.style.display = isOllama ? "" : "none";
         ollamaHint.style.display = isOllama ? "" : "none";
+        venRow.style.display = isVen ? "" : "none";
+        venHint.style.display = isVen ? (venKeyInput.value ? "none" : "") : "none";
         localRow.style.display = isLocal ? "" : "none";
         // unload-after applies to local (free VRAM) and ollama (keep_alive:0); think to both
         unloadWrap.style.display = (isLocal || isOllama) ? "" : "none";
-        thinkWrap.style.display = isGem ? "none" : "";
-        refreshKeyHint();
+        thinkWrap.style.display = (isGem || isVen) ? "none" : "";
         requestAnimationFrame(fitNode);
       }
       function setBackend(b) { node._ai.backend = b; serializeAi(); refreshBackendUI(); }
       localBtn.addEventListener("mousedown", (e) => e.stopPropagation());
       ollamaBtn.addEventListener("mousedown", (e) => e.stopPropagation());
       gemBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+      venBtn.addEventListener("mousedown", (e) => e.stopPropagation());
       localBtn.addEventListener("click", () => setBackend("local"));
       ollamaBtn.addEventListener("click", () => setBackend("ollama"));
       gemBtn.addEventListener("click", () => setBackend("gemini"));
+      venBtn.addEventListener("click", () => setBackend("venice"));
 
       function refreshDensityUI() {
         const high = node._ai.density === "high";
@@ -863,6 +891,12 @@ app.registerExtension({
       ollamaSelect.addEventListener("change", () => { node._ai.ollama_model = ollamaSelect.value; serializeAi(); });
       stopProp(thinkCb);
       thinkCb.addEventListener("change", () => { node._ai.think = thinkCb.checked; serializeAi(); });
+
+      // Venice key + model wiring
+      stopProp(venKeyInput);
+      venKeyInput.addEventListener("input", () => { refreshVenHint(); });
+      stopProp(venSelect);
+      venSelect.addEventListener("change", () => { node._ai.venice_model = venSelect.value; serializeAi(); });
 
       function setImageFromFile(file) {
         if (!file || !file.type.startsWith("image/")) return;
@@ -969,6 +1003,34 @@ app.registerExtension({
         finally { ollamaFetchBtn.disabled = false; }
       });
 
+      stopProp(venFetchBtn);
+      venFetchBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+      venFetchBtn.addEventListener("click", async () => {
+        const venKey = venKeyInput.value.trim();
+        if (!venKey) { setStatus("Enter a Venice API key first.", true); return; }
+        venFetchBtn.disabled = true; setStatus("Fetching Venice models…", false, true);
+        try {
+          const r = await fetch("/ideogram_autoprompter/venice/models", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ api_key: venKey }),
+          });
+          const data = await r.json();
+          if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+          venSelect.innerHTML = "";
+          for (const m of data.models) {
+            const o = document.createElement("option");
+            o.value = m.id; o.textContent = m.display_name || m.id;
+            venSelect.appendChild(o);
+          }
+          if (node._ai.venice_model) venSelect.value = node._ai.venice_model;
+          if (!venSelect.value && venSelect.options.length) {
+            venSelect.selectedIndex = 0; node._ai.venice_model = venSelect.value; serializeAi();
+          }
+          setStatus(data.models.length + " models loaded.");
+        } catch (e) { setStatus("Error: " + e.message, true); }
+        finally { venFetchBtn.disabled = false; }
+      });
+
       generateBtn.addEventListener("mousedown", (e) => e.stopPropagation());
       generateBtn.addEventListener("click", async () => {
         if (node._gening) return;
@@ -980,17 +1042,21 @@ app.registerExtension({
         if (backend === "ollama" && !ollamaSelect.value) {
           setStatus("Fetch and select an Ollama model.", true); return;
         }
+        if (backend === "venice" && (!venKeyInput.value.trim() || !venSelect.value)) {
+          setStatus("Set a Venice API key and fetch/select a model.", true); return;
+        }
         setGenBusy(true); setStatus("Starting…", false, true);
         let poll = backend === "local" ? setInterval(pollStatus, 1200) : null;
         try {
           const model = backend === "gemini" ? modelSelect.value
             : backend === "ollama" ? ollamaSelect.value
+            : backend === "venice" ? venSelect.value
             : localModelInput.value.trim();
           const payload = {
             backend, idea: ideaTa.value,
             image_b64: node._image ? node._image.b64 : null,
             model,
-            api_key: node._apiKey || "",
+            api_key: backend === "venice" ? venKeyInput.value.trim() : (node._apiKey || ""),
             host: node._ai.ollama_host || DEFAULT_OLLAMA_HOST,
             four_bit: node._ai.four_bit, unload_after: node._ai.unload_after,
             density: node._ai.density, attn: node._ai.attn, think: node._ai.think,
@@ -1166,6 +1232,15 @@ app.registerExtension({
             ollamaSelect.appendChild(o);
           }
           ollamaSelect.value = node._ai.ollama_model;
+        }
+        if (node._ai.venice_model) {
+          const exists = Array.from(venSelect.options).some((o) => o.value === node._ai.venice_model);
+          if (!exists) {
+            const o = document.createElement("option");
+            o.value = node._ai.venice_model; o.textContent = node._ai.venice_model;
+            venSelect.appendChild(o);
+          }
+          venSelect.value = node._ai.venice_model;
         }
         refreshDensityUI();
         refreshBackendUI();
